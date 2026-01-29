@@ -1445,6 +1445,8 @@
             }, false);
         }
 
+        let headerRowIndex = 0; // Başlık satırı indexi
+
         function handleFileSelect(e) {
             const file = e.target.files[0];
             if (!file) return;
@@ -1456,49 +1458,146 @@
                 const data = new Uint8Array(e.target.result);
                 const workbook = XLSX.read(data, { type: 'array' });
                 fileData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]], { header: 1 });
+
+                // Otomatik başlık satırını bul
+                headerRowIndex = findHeaderRow();
                 showMappingModal();
             };
             reader.readAsArrayBuffer(file);
         }
 
+        // Başlık satırını otomatik bul (Hesap, Borç, Alacak kelimelerini ara)
+        function findHeaderRow() {
+            const keywords = ['hesap', 'borç', 'borc', 'alacak', 'kod', 'tutar', 'bakiye'];
+
+            for (let i = 0; i < Math.min(10, fileData.length); i++) {
+                const row = fileData[i];
+                if (!row || row.length === 0) continue;
+
+                let matchCount = 0;
+                for (const cell of row) {
+                    if (cell) {
+                        const cellLower = cell.toString().toLowerCase();
+                        for (const keyword of keywords) {
+                            if (cellLower.includes(keyword)) {
+                                matchCount++;
+                                break;
+                            }
+                        }
+                    }
+                }
+
+                // En az 2 anahtar kelime bulunursa bu satır başlık
+                if (matchCount >= 2) {
+                    console.log('Başlık satırı bulundu:', i + 1);
+                    return i;
+                }
+            }
+            return 0; // Bulunamazsa ilk satır
+        }
+
         function showMappingModal() {
             if (!fileData || fileData.length < 2) { alert('Dosya boş veya geçersiz'); return; }
-            const headers = fileData[0];
+
             const modal = document.getElementById('mappingModal');
+
+            // Başlık satırı seçici oluştur
+            updateHeaderRowSelector();
+            updateColumnSelectors();
+            updatePreviewTable();
+
+            modal.classList.add('show');
+        }
+
+        function updateHeaderRowSelector() {
+            let selectorHTML = '<div class="form-group" style="margin-bottom:20px;"><label>Başlık Satırı Seçin (Hesap Kodu, Borç, Alacak başlıklarının olduğu satır)</label><select id="headerRowSelect" onchange="onHeaderRowChange()">';
+
+            for (let i = 0; i < Math.min(15, fileData.length); i++) {
+                const row = fileData[i];
+                const preview = row ? row.slice(0, 4).map(c => c || '-').join(' | ') : '-';
+                const selected = i === headerRowIndex ? 'selected' : '';
+                selectorHTML += `<option value="${i}" ${selected}>Satır ${i + 1}: ${preview.substring(0, 60)}${preview.length > 60 ? '...' : ''}</option>`;
+            }
+
+            selectorHTML += '</select></div>';
+
+            // Modal içine ekle
+            const mappingInfo = document.querySelector('.mapping-info');
+            let existingSelector = document.getElementById('headerRowContainer');
+            if (existingSelector) {
+                existingSelector.innerHTML = selectorHTML;
+            } else {
+                const container = document.createElement('div');
+                container.id = 'headerRowContainer';
+                container.innerHTML = selectorHTML;
+                mappingInfo.after(container);
+            }
+        }
+
+        function onHeaderRowChange() {
+            headerRowIndex = parseInt(document.getElementById('headerRowSelect').value);
+            updateColumnSelectors();
+            updatePreviewTable();
+        }
+
+        function updateColumnSelectors() {
+            const headers = fileData[headerRowIndex] || [];
 
             ['codeColumn', 'nameColumn', 'debitColumn', 'creditColumn'].forEach(id => {
                 const select = document.getElementById(id);
                 select.innerHTML = '<option value="">Seçiniz...</option>';
-                headers.forEach((h, i) => { select.innerHTML += `<option value="${i}">${h || 'Sütun ' + (i+1)}</option>`; });
+                headers.forEach((h, i) => {
+                    select.innerHTML += `<option value="${i}">${h || 'Sütun ' + (i+1)}</option>`;
+                });
             });
 
+            // Otomatik eşleştirme
             headers.forEach((h, i) => {
                 const hl = (h || '').toString().toLowerCase();
-                if (hl.includes('hesap') && (hl.includes('kod') || hl.includes('no'))) document.getElementById('codeColumn').value = i;
-                else if (hl.includes('hesap') && hl.includes('ad')) document.getElementById('nameColumn').value = i;
-                else if (hl.includes('borç') || hl.includes('borc') || hl.includes('tutar')) document.getElementById('debitColumn').value = i;
-                else if (hl.includes('alacak')) document.getElementById('creditColumn').value = i;
+                if (hl.includes('hesap') && (hl.includes('kod') || hl.includes('no') || hl.includes('kodu'))) {
+                    document.getElementById('codeColumn').value = i;
+                } else if (hl.includes('hesap') && hl.includes('ad')) {
+                    document.getElementById('nameColumn').value = i;
+                } else if (hl.includes('borç') || hl.includes('borc')) {
+                    document.getElementById('debitColumn').value = i;
+                } else if (hl.includes('alacak')) {
+                    document.getElementById('creditColumn').value = i;
+                }
             });
+        }
 
+        function updatePreviewTable() {
+            const headers = fileData[headerRowIndex] || [];
             let tableHTML = '<thead><tr>' + headers.map(h => `<th>${h || '-'}</th>`).join('') + '</tr></thead><tbody>';
-            for (let i = 1; i < Math.min(6, fileData.length); i++) {
-                tableHTML += '<tr>' + fileData[i].map(c => `<td>${c !== undefined ? c : '-'}</td>`).join('') + '</tr>';
+
+            // Başlık satırından sonraki 5 satırı göster
+            for (let i = headerRowIndex + 1; i < Math.min(headerRowIndex + 6, fileData.length); i++) {
+                const row = fileData[i] || [];
+                tableHTML += '<tr>' + headers.map((_, idx) => `<td>${row[idx] !== undefined ? row[idx] : '-'}</td>`).join('') + '</tr>';
             }
+
             document.getElementById('previewTable').innerHTML = tableHTML + '</tbody>';
-            modal.classList.add('show');
         }
 
         function confirmMapping() {
             const codeCol = document.getElementById('codeColumn').value;
             const debitCol = document.getElementById('debitColumn').value;
-            if (!codeCol || !debitCol) { alert('Hesap Kodu ve Borç sütunlarını seçin'); return; }
+
+            if (codeCol === '' || debitCol === '') {
+                alert('Lütfen Hesap Kodu ve Borç/Tutar sütunlarını seçin');
+                return;
+            }
 
             columnMapping = {
                 code: parseInt(codeCol),
-                name: document.getElementById('nameColumn').value ? parseInt(document.getElementById('nameColumn').value) : null,
+                name: document.getElementById('nameColumn').value !== '' ? parseInt(document.getElementById('nameColumn').value) : null,
                 debit: parseInt(debitCol),
-                credit: document.getElementById('creditColumn').value ? parseInt(document.getElementById('creditColumn').value) : null
+                credit: document.getElementById('creditColumn').value !== '' ? parseInt(document.getElementById('creditColumn').value) : null,
+                headerRow: headerRowIndex // Başlık satırı indexini kaydet
             };
+
+            console.log('Sütun eşleştirmesi:', columnMapping);
+            console.log('Başlık satırı:', headerRowIndex + 1);
 
             processData();
             closeModal();
@@ -1560,10 +1659,16 @@
             financialData = {};
             Object.keys(accountGroups).forEach(g => financialData[g] = 0);
 
-            console.log('İşlenen satır sayısı:', fileData.length - 1);
+            // Başlık satırından sonraki satırları işle
+            const startRow = headerRowIndex + 1;
+            console.log('Başlık satırı:', headerRowIndex + 1);
+            console.log('Veri başlangıç satırı:', startRow + 1);
+            console.log('İşlenecek satır sayısı:', fileData.length - startRow);
 
-            for (let i = 1; i < fileData.length; i++) {
+            for (let i = startRow; i < fileData.length; i++) {
                 const row = fileData[i];
+                if (!row || row.length === 0) continue;
+
                 let code = row[columnMapping.code];
                 if (!code) continue;
 
