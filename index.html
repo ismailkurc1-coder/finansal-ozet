@@ -1505,24 +1505,95 @@
             document.getElementById('companyForm').classList.add('show');
         }
 
+        // Türk formatındaki tutarı parse et (1.234.567,89 → 1234567.89)
+        function parseTurkishNumber(value) {
+            if (value === null || value === undefined || value === '') return 0;
+
+            // Zaten sayı ise direkt döndür
+            if (typeof value === 'number') return value;
+
+            let str = value.toString().trim();
+
+            // Parantez içindeki negatif değerler: (1.234) → -1234
+            if (str.startsWith('(') && str.endsWith(')')) {
+                str = '-' + str.slice(1, -1);
+            }
+
+            // Eksi işareti sonunda olabilir: 1.234- → -1234
+            if (str.endsWith('-')) {
+                str = '-' + str.slice(0, -1);
+            }
+
+            // Türk formatı: nokta binlik ayraç, virgül ondalık
+            // 1.234.567,89 → 1234567.89
+            if (str.includes(',') && str.includes('.')) {
+                // Türk formatı: noktaları kaldır, virgülü noktaya çevir
+                str = str.replace(/\./g, '').replace(',', '.');
+            } else if (str.includes(',') && !str.includes('.')) {
+                // Sadece virgül var: 1234,56 veya 1,234,567
+                const commaCount = (str.match(/,/g) || []).length;
+                if (commaCount === 1 && str.split(',')[1].length <= 2) {
+                    // Ondalık virgül: 1234,56
+                    str = str.replace(',', '.');
+                } else {
+                    // Binlik virgül: 1,234,567
+                    str = str.replace(/,/g, '');
+                }
+            } else if (str.includes('.')) {
+                // Sadece nokta var
+                const dotCount = (str.match(/\./g) || []).length;
+                if (dotCount > 1) {
+                    // Binlik nokta: 1.234.567
+                    str = str.replace(/\./g, '');
+                }
+                // Tek nokta: ondalık olarak kabul et (1234.56)
+            }
+
+            // Sayı olmayan karakterleri temizle (para birimi simgeleri vs)
+            str = str.replace(/[^\d.\-]/g, '');
+
+            const result = parseFloat(str);
+            return isNaN(result) ? 0 : result;
+        }
+
         function processData() {
             financialData = {};
             Object.keys(accountGroups).forEach(g => financialData[g] = 0);
+
+            console.log('İşlenen satır sayısı:', fileData.length - 1);
 
             for (let i = 1; i < fileData.length; i++) {
                 const row = fileData[i];
                 let code = row[columnMapping.code];
                 if (!code) continue;
-                code = code.toString().replace(/\D/g, '').substring(0, 3);
-                if (!code) continue;
 
-                let amount = parseFloat(row[columnMapping.debit]) || 0;
-                if (columnMapping.credit !== null) amount -= (parseFloat(row[columnMapping.credit]) || 0);
+                // Hesap kodunu temizle - sadece ilk 3 rakamı al
+                code = code.toString().replace(/\D/g, '').substring(0, 3);
+                if (!code || code.length < 3) continue;
+
+                // Türk formatındaki tutarları parse et
+                let borc = parseTurkishNumber(row[columnMapping.debit]);
+                let alacak = columnMapping.credit !== null ? parseTurkishNumber(row[columnMapping.credit]) : 0;
+
+                // Aktif hesaplar (1xx, 2xx): Borç bakiyesi pozitif
+                // Pasif hesaplar (3xx, 4xx, 5xx): Alacak bakiyesi pozitif
+                // Gelir hesapları (6xx): Karışık
+                let amount = borc - alacak;
+
+                // Debug: İlk 10 satırı konsola yaz
+                if (i <= 10) {
+                    console.log(`Satır ${i}: Kod=${code}, Borç=${borc}, Alacak=${alacak}, Net=${amount}`);
+                }
 
                 for (const [group, codes] of Object.entries(accountGroups)) {
-                    if (codes.includes(code)) { financialData[group] += amount; break; }
+                    if (codes.includes(code)) {
+                        financialData[group] += amount;
+                        break;
+                    }
                 }
             }
+
+            console.log('İşlenen veriler:', financialData);
         }
 
         function generateReport() {
